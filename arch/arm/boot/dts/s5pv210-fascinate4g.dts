@@ -8,6 +8,7 @@
 / {
 	model = "Samsung Galaxy S Fascinate 4G (SGH-T959P) based on S5PV210";
 	compatible = "samsung,fascinate4g", "samsung,aries", "samsung,s5pv210";
+	chassis-type = "handset";
 
 	chosen {
 		stdout-path = &uart2;
@@ -115,7 +116,7 @@
 	compatible = "maxim,max77836-battery";
 
 	interrupt-parent = <&gph3>;
-	interrupts = <3 IRQ_TYPE_EDGE_FALLING>;
+	interrupts = <3 IRQ_TYPE_LEVEL_LOW>;
 
 	pinctrl-names = "default";
 	pinctrl-0 = <&fg_irq>;

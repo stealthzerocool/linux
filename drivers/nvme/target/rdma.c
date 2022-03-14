@@ -5,6 +5,7 @@
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/atomic.h>
+#include <linux/blk-integrity.h>
 #include <linux/ctype.h>
 #include <linux/delay.h>
 #include <linux/err.h>
@@ -700,7 +701,7 @@ static void nvmet_rdma_send_done(struct ib_cq *cq, struct ib_wc *wc)
 {
 	struct nvmet_rdma_rsp *rsp =
 		container_of(wc->wr_cqe, struct nvmet_rdma_rsp, send_cqe);
-	struct nvmet_rdma_queue *queue = cq->cq_context;
+	struct nvmet_rdma_queue *queue = wc->qp->qp_context;
 
 	nvmet_rdma_release_rsp(rsp);
 
@@ -786,7 +787,7 @@ static void nvmet_rdma_write_data_done(struct ib_cq *cq, struct ib_wc *wc)
 {
 	struct nvmet_rdma_rsp *rsp =
 		container_of(wc->wr_cqe, struct nvmet_rdma_rsp, write_cqe);
-	struct nvmet_rdma_queue *queue = cq->cq_context;
+	struct nvmet_rdma_queue *queue = wc->qp->qp_context;
 	struct rdma_cm_id *cm_id = rsp->queue->cm_id;
 	u16 status;
 
@@ -802,9 +803,8 @@ static void nvmet_rdma_write_data_done(struct ib_cq *cq, struct ib_wc *wc)
 		nvmet_req_uninit(&rsp->req);
 		nvmet_rdma_release_rsp(rsp);
 		if (wc->status != IB_WC_WR_FLUSH_ERR) {
-			pr_info("RDMA WRITE for CQE 0x%p failed with status %s (%d).\n",
-				wc->wr_cqe, ib_wc_status_msg(wc->status),
-				wc->status);
+			pr_info("RDMA WRITE for CQE failed with status %s (%d).\n",
+				ib_wc_status_msg(wc->status), wc->status);
 			nvmet_rdma_error_comp(queue);
 		}
 		return;
@@ -1258,7 +1258,7 @@ out_err:
 
 static int nvmet_rdma_create_queue_ib(struct nvmet_rdma_queue *queue)
 {
-	struct ib_qp_init_attr qp_attr;
+	struct ib_qp_init_attr qp_attr = { };
 	struct nvmet_rdma_device *ndev = queue->dev;
 	int nr_cqe, ret, i, factor;
 
@@ -1276,7 +1276,6 @@ static int nvmet_rdma_create_queue_ib(struct nvmet_rdma_queue *queue)
 		goto out;
 	}
 
-	memset(&qp_attr, 0, sizeof(qp_attr));
 	qp_attr.qp_context = queue;
 	qp_attr.event_handler = nvmet_rdma_qp_event;
 	qp_attr.send_cq = queue->cq;
@@ -1820,12 +1819,36 @@ restart:
 	mutex_unlock(&nvmet_rdma_queue_mutex);
 }
 
+static void nvmet_rdma_destroy_port_queues(struct nvmet_rdma_port *port)
+{
+	struct nvmet_rdma_queue *queue, *tmp;
+	struct nvmet_port *nport = port->nport;
+
+	mutex_lock(&nvmet_rdma_queue_mutex);
+	list_for_each_entry_safe(queue, tmp, &nvmet_rdma_queue_list,
+				 queue_list) {
+		if (queue->port != nport)
+			continue;
+
+		list_del_init(&queue->queue_list);
+		__nvmet_rdma_queue_disconnect(queue);
+	}
+	mutex_unlock(&nvmet_rdma_queue_mutex);
+}
+
 static void nvmet_rdma_disable_port(struct nvmet_rdma_port *port)
 {
 	struct rdma_cm_id *cm_id = xchg(&port->cm_id, NULL);
 
 	if (cm_id)
 		rdma_destroy_id(cm_id);
+
+	/*
+	 * Destroy the remaining queues, which are not belong to any
+	 * controller yet. Do it here after the RDMA-CM was destroyed
+	 * guarantees that no new queue will be created.
+	 */
+	nvmet_rdma_destroy_port_queues(port);
 }
 
 static int nvmet_rdma_enable_port(struct nvmet_rdma_port *port)
@@ -1977,6 +2000,11 @@ static u8 nvmet_rdma_get_mdts(const struct nvmet_ctrl *ctrl)
 	return NVMET_RDMA_MAX_MDTS;
 }
 
+static u16 nvmet_rdma_get_max_queue_size(const struct nvmet_ctrl *ctrl)
+{
+	return NVME_RDMA_MAX_QUEUE_SIZE;
+}
+
 static const struct nvmet_fabrics_ops nvmet_rdma_ops = {
 	.owner			= THIS_MODULE,
 	.type			= NVMF_TRTYPE_RDMA,
@@ -1988,6 +2016,7 @@ static const struct nvmet_fabrics_ops nvmet_rdma_ops = {
 	.delete_ctrl		= nvmet_rdma_delete_ctrl,
 	.disc_traddr		= nvmet_rdma_disc_port_addr,
 	.get_mdts		= nvmet_rdma_get_mdts,
+	.get_max_queue_size	= nvmet_rdma_get_max_queue_size,
 };
 
 static void nvmet_rdma_remove_one(struct ib_device *ib_device, void *client_data)

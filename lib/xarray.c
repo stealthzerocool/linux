@@ -157,7 +157,7 @@ static void xas_move_index(struct xa_state *xas, unsigned long offset)
 	xas->xa_index += offset << shift;
 }
 
-static void xas_advance(struct xa_state *xas)
+static void xas_next_offset(struct xa_state *xas)
 {
 	xas->xa_offset++;
 	xas_move_index(xas, xas->xa_offset);
@@ -987,7 +987,7 @@ static void node_set_marks(struct xa_node *node, unsigned int offset,
  * xas_split_alloc() - Allocate memory for splitting an entry.
  * @xas: XArray operation state.
  * @entry: New entry which will be stored in the array.
- * @order: New entry order.
+ * @order: Current entry order.
  * @gfp: Memory allocation flags.
  *
  * This function should be called before calling xas_split().
@@ -1011,7 +1011,7 @@ void xas_split_alloc(struct xa_state *xas, void *entry, unsigned int order,
 
 	do {
 		unsigned int i;
-		void *sibling;
+		void *sibling = NULL;
 		struct xa_node *node;
 
 		node = kmem_cache_alloc(radix_tree_node_cachep, gfp);
@@ -1021,7 +1021,7 @@ void xas_split_alloc(struct xa_state *xas, void *entry, unsigned int order,
 		for (i = 0; i < XA_CHUNK_SIZE; i++) {
 			if ((i & mask) == 0) {
 				RCU_INIT_POINTER(node->slots[i], entry);
-				sibling = xa_mk_sibling(0);
+				sibling = xa_mk_sibling(i);
 			} else {
 				RCU_INIT_POINTER(node->slots[i], sibling);
 			}
@@ -1041,9 +1041,10 @@ EXPORT_SYMBOL_GPL(xas_split_alloc);
  * xas_split() - Split a multi-index entry into smaller entries.
  * @xas: XArray operation state.
  * @entry: New entry to store in the array.
- * @order: New entry order.
+ * @order: Current entry order.
  *
- * The value in the entry is copied to all the replacement entries.
+ * The size of the new entries is set in @xas.  The value in @entry is
+ * copied to all the replacement entries.
  *
  * Context: Any context.  The caller should hold the xa_lock.
  */
@@ -1249,7 +1250,7 @@ void *xas_find(struct xa_state *xas, unsigned long max)
 		xas->xa_offset = ((xas->xa_index - 1) & XA_CHUNK_MASK) + 1;
 	}
 
-	xas_advance(xas);
+	xas_next_offset(xas);
 
 	while (xas->xa_node && (xas->xa_index <= max)) {
 		if (unlikely(xas->xa_offset == XA_CHUNK_SIZE)) {
@@ -1267,7 +1268,7 @@ void *xas_find(struct xa_state *xas, unsigned long max)
 		if (entry && !xa_is_sibling(entry))
 			return entry;
 
-		xas_advance(xas);
+		xas_next_offset(xas);
 	}
 
 	if (!xas->xa_node)

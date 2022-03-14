@@ -151,7 +151,7 @@ bool mlx5e_xdp_handle(struct mlx5e_rq *rq, struct mlx5e_dma_info *di,
 		rq->stats->xdp_redirect++;
 		return true;
 	default:
-		bpf_warn_invalid_xdp_action(act);
+		bpf_warn_invalid_xdp_action(rq->netdev, prog, act);
 		fallthrough;
 	case XDP_ABORTED:
 xdp_abort:
@@ -341,8 +341,10 @@ mlx5e_xmit_xdp_frame(struct mlx5e_xdpsq *sq, struct mlx5e_xmit_data *xdptxd,
 
 	/* copy the inline part if required */
 	if (sq->min_inline_mode != MLX5_INLINE_MODE_NONE) {
-		memcpy(eseg->inline_hdr.start, xdptxd->data, MLX5E_XDP_MIN_INLINE);
+		memcpy(eseg->inline_hdr.start, xdptxd->data, sizeof(eseg->inline_hdr.start));
 		eseg->inline_hdr.sz = cpu_to_be16(MLX5E_XDP_MIN_INLINE);
+		memcpy(dseg, xdptxd->data + sizeof(eseg->inline_hdr.start),
+		       MLX5E_XDP_MIN_INLINE - sizeof(eseg->inline_hdr.start));
 		dma_len  -= MLX5E_XDP_MIN_INLINE;
 		dma_addr += MLX5E_XDP_MIN_INLINE;
 		dseg++;
@@ -500,7 +502,7 @@ int mlx5e_xdp_xmit(struct net_device *dev, int n, struct xdp_frame **frames,
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
 	struct mlx5e_xdpsq *sq;
-	int drops = 0;
+	int nxmit = 0;
 	int sq_num;
 	int i;
 
@@ -529,11 +531,8 @@ int mlx5e_xdp_xmit(struct net_device *dev, int n, struct xdp_frame **frames,
 		xdptxd.dma_addr = dma_map_single(sq->pdev, xdptxd.data,
 						 xdptxd.len, DMA_TO_DEVICE);
 
-		if (unlikely(dma_mapping_error(sq->pdev, xdptxd.dma_addr))) {
-			xdp_return_frame_rx_napi(xdpf);
-			drops++;
-			continue;
-		}
+		if (unlikely(dma_mapping_error(sq->pdev, xdptxd.dma_addr)))
+			break;
 
 		xdpi.mode           = MLX5E_XDP_XMIT_MODE_FRAME;
 		xdpi.frame.xdpf     = xdpf;
@@ -544,9 +543,9 @@ int mlx5e_xdp_xmit(struct net_device *dev, int n, struct xdp_frame **frames,
 		if (unlikely(!ret)) {
 			dma_unmap_single(sq->pdev, xdptxd.dma_addr,
 					 xdptxd.len, DMA_TO_DEVICE);
-			xdp_return_frame_rx_napi(xdpf);
-			drops++;
+			break;
 		}
+		nxmit++;
 	}
 
 	if (flags & XDP_XMIT_FLUSH) {
@@ -555,7 +554,7 @@ int mlx5e_xdp_xmit(struct net_device *dev, int n, struct xdp_frame **frames,
 		mlx5e_xmit_xdp_doorbell(sq);
 	}
 
-	return n - drops;
+	return nxmit;
 }
 
 void mlx5e_xdp_rx_poll_complete(struct mlx5e_rq *rq)

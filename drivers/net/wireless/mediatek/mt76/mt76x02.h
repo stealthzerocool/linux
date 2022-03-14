@@ -82,8 +82,6 @@ struct mt76x02_dev {
 
 	struct mutex phy_mutex;
 
-	u16 chainmask;
-
 	u8 txdone_seq;
 	DECLARE_KFIFO_PTR(txstatus_fifo, struct mt76x02_tx_status);
 	spinlock_t txstatus_fifo_lock;
@@ -135,7 +133,7 @@ struct mt76x02_dev {
 
 extern struct ieee80211_rate mt76x02_rates[12];
 
-void mt76x02_init_device(struct mt76x02_dev *dev);
+int mt76x02_init_device(struct mt76x02_dev *dev);
 void mt76x02_configure_filter(struct ieee80211_hw *hw,
 			      unsigned int changed_flags,
 			      unsigned int *total_flags, u64 multicast);

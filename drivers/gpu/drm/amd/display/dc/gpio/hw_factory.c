@@ -105,12 +105,15 @@ bool dal_hw_factory_init(
 	case DCN_VERSION_2_0:
 		dal_hw_factory_dcn20_init(factory);
 		return true;
+	case DCN_VERSION_2_01:
 	case DCN_VERSION_2_1:
 		dal_hw_factory_dcn21_init(factory);
 		return true;
 	case DCN_VERSION_3_0:
 	case DCN_VERSION_3_01:
 	case DCN_VERSION_3_02:
+	case DCN_VERSION_3_03:
+	case DCN_VERSION_3_1:
 		dal_hw_factory_dcn30_init(factory);
 		return true;
 #endif
@@ -118,18 +121,4 @@ bool dal_hw_factory_init(
 		ASSERT_CRITICAL(false);
 		return false;
 	}
-}
-
-void dal_hw_factory_destroy(
-	struct dc_context *ctx,
-	struct hw_factory **factory)
-{
-	if (!factory || !*factory) {
-		BREAK_TO_DEBUGGER();
-		return;
-	}
-
-	kfree(*factory);
-
-	*factory = NULL;
 }

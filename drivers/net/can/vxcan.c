@@ -62,7 +62,7 @@ static netdev_tx_t vxcan_xmit(struct sk_buff *skb, struct net_device *dev)
 	skb->dev        = peer;
 	skb->ip_summed  = CHECKSUM_UNNECESSARY;
 
-	len = cfd->len;
+	len = cfd->can_id & CAN_RTR_FLAG ? 0 : cfd->len;
 	if (netif_rx_ni(skb) == NET_RX_SUCCESS) {
 		srcstats->tx_packets++;
 		srcstats->tx_bytes += len;
@@ -141,6 +141,8 @@ static const struct net_device_ops vxcan_netdev_ops = {
 
 static void vxcan_setup(struct net_device *dev)
 {
+	struct can_ml_priv *can_ml;
+
 	dev->type		= ARPHRD_CAN;
 	dev->mtu		= CANFD_MTU;
 	dev->hard_header_len	= 0;
@@ -149,7 +151,9 @@ static void vxcan_setup(struct net_device *dev)
 	dev->flags		= (IFF_NOARP|IFF_ECHO);
 	dev->netdev_ops		= &vxcan_netdev_ops;
 	dev->needs_free_netdev	= true;
-	dev->ml_priv		= netdev_priv(dev) + ALIGN(sizeof(struct vxcan_priv), NETDEV_ALIGN);
+
+	can_ml = netdev_priv(dev) + ALIGN(sizeof(struct vxcan_priv), NETDEV_ALIGN);
+	can_set_ml_priv(dev, can_ml);
 }
 
 /* forward declaration for rtnl_create_link() */

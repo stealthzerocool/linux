@@ -121,7 +121,7 @@ static ssize_t ti_dac_read_powerdown(struct iio_dev *indio_dev,
 {
 	struct ti_dac_chip *ti_dac = iio_priv(indio_dev);
 
-	return sprintf(buf, "%d\n", ti_dac->powerdown);
+	return sysfs_emit(buf, "%d\n", ti_dac->powerdown);
 }
 
 static ssize_t ti_dac_write_powerdown(struct iio_dev *indio_dev,
@@ -160,7 +160,7 @@ static const struct iio_chan_spec_ext_info ti_dac_ext_info[] = {
 		.shared	   = IIO_SHARED_BY_TYPE,
 	},
 	IIO_ENUM("powerdown_mode", IIO_SHARED_BY_TYPE, &ti_dac_powerdown_mode),
-	IIO_ENUM_AVAILABLE("powerdown_mode", &ti_dac_powerdown_mode),
+	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE, &ti_dac_powerdown_mode),
 	{ },
 };
 

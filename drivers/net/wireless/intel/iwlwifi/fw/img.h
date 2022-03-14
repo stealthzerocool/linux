@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
- * Copyright (C) 2005-2014, 2018-2020 Intel Corporation
+ * Copyright (C) 2005-2014, 2018-2021 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016 Intel Deutschland GmbH
  */
@@ -116,16 +116,21 @@ struct fw_img {
 #define PAGING_CMD_NUM_OF_PAGES_IN_LAST_GRP_POS	0
 #define PAGING_TLV_SECURE_MASK 1
 
+/* FW MSB Mask for regions/cache_control */
+#define FW_ADDR_CACHE_CONTROL 0xC0000000UL
+
 /**
  * struct iwl_fw_paging
  * @fw_paging_phys: page phy pointer
  * @fw_paging_block: pointer to the allocated block
  * @fw_paging_size: page size
+ * @fw_offs: offset in the device
  */
 struct iwl_fw_paging {
 	dma_addr_t fw_paging_phys;
 	struct page *fw_paging_block;
 	u32 fw_paging_size;
+	u32 fw_offs;
 };
 
 /**
@@ -171,6 +176,10 @@ struct iwl_fw_dbg {
 	u32 dump_mask;
 };
 
+struct iwl_dump_exclude {
+	u32 addr, size;
+};
+
 /**
  * struct iwl_fw - variables associated with the firmware
  *
@@ -191,6 +200,10 @@ struct iwl_fw_dbg {
  * @cipher_scheme: optional external cipher scheme.
  * @human_readable: human readable version
  *	we get the ALIVE from the uCode
+ * @phy_integration_ver: PHY integration version string
+ * @phy_integration_ver_len: length of @phy_integration_ver
+ * @dump_excl: image dump exclusion areas for RT image
+ * @dump_excl_wowlan: image dump exclusion areas for WoWLAN image
  */
 struct iwl_fw {
 	u32 ucode_ver;
@@ -219,6 +232,11 @@ struct iwl_fw {
 	u8 human_readable[FW_VER_HUMAN_READABLE_SZ];
 
 	struct iwl_fw_dbg dbg;
+
+	u8 *phy_integration_ver;
+	u32 phy_integration_ver_len;
+
+	struct iwl_dump_exclude dump_excl[2], dump_excl_wowlan[2];
 };
 
 static inline const char *get_fw_dbg_mode_string(int mode)
@@ -261,4 +279,8 @@ u8 iwl_fw_lookup_cmd_ver(const struct iwl_fw *fw, u8 grp, u8 cmd, u8 def);
 
 u8 iwl_fw_lookup_notif_ver(const struct iwl_fw *fw, u8 grp, u8 cmd, u8 def);
 const char *iwl_fw_lookup_assert_desc(u32 num);
+
+#define FW_SYSASSERT_CPU_MASK		0xf0000000
+#define FW_SYSASSERT_PNVM_MISSING	0x0010070d
+
 #endif  /* __iwl_fw_img_h__ */

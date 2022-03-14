@@ -12,8 +12,13 @@
 long hl_get_frequency(struct hl_device *hdev, u32 pll_index, bool curr)
 {
 	struct cpucp_packet pkt;
+	u32 used_pll_idx;
 	u64 result;
 	int rc;
+
+	rc = get_used_pll_index(hdev, pll_index, &used_pll_idx);
+	if (rc)
+		return rc;
 
 	memset(&pkt, 0, sizeof(pkt));
 
@@ -23,7 +28,7 @@ long hl_get_frequency(struct hl_device *hdev, u32 pll_index, bool curr)
 	else
 		pkt.ctl = cpu_to_le32(CPUCP_PACKET_FREQUENCY_GET <<
 						CPUCP_PKT_CTL_OPCODE_SHIFT);
-	pkt.pll_index = cpu_to_le32(pll_index);
+	pkt.pll_index = cpu_to_le32((u32)used_pll_idx);
 
 	rc = hdev->asic_funcs->send_cpu_message(hdev, (u32 *) &pkt, sizeof(pkt),
 						0, &result);
@@ -31,7 +36,7 @@ long hl_get_frequency(struct hl_device *hdev, u32 pll_index, bool curr)
 	if (rc) {
 		dev_err(hdev->dev,
 			"Failed to get frequency of PLL %d, error %d\n",
-			pll_index, rc);
+			used_pll_idx, rc);
 		return rc;
 	}
 
@@ -41,13 +46,18 @@ long hl_get_frequency(struct hl_device *hdev, u32 pll_index, bool curr)
 void hl_set_frequency(struct hl_device *hdev, u32 pll_index, u64 freq)
 {
 	struct cpucp_packet pkt;
+	u32 used_pll_idx;
 	int rc;
+
+	rc = get_used_pll_index(hdev, pll_index, &used_pll_idx);
+	if (rc)
+		return;
 
 	memset(&pkt, 0, sizeof(pkt));
 
 	pkt.ctl = cpu_to_le32(CPUCP_PACKET_FREQUENCY_SET <<
 					CPUCP_PKT_CTL_OPCODE_SHIFT);
-	pkt.pll_index = cpu_to_le32(pll_index);
+	pkt.pll_index = cpu_to_le32((u32)used_pll_idx);
 	pkt.value = cpu_to_le64(freq);
 
 	rc = hdev->asic_funcs->send_cpu_message(hdev, (u32 *) &pkt, sizeof(pkt),
@@ -56,7 +66,7 @@ void hl_set_frequency(struct hl_device *hdev, u32 pll_index, u64 freq)
 	if (rc)
 		dev_err(hdev->dev,
 			"Failed to set frequency to PLL %d, error %d\n",
-			pll_index, rc);
+			used_pll_idx, rc);
 }
 
 u64 hl_get_max_power(struct hl_device *hdev)
@@ -129,7 +139,7 @@ static ssize_t cpld_ver_show(struct device *dev, struct device_attribute *attr,
 	struct hl_device *hdev = dev_get_drvdata(dev);
 
 	return sprintf(buf, "0x%08x\n",
-			hdev->asic_prop.cpucp_info.cpld_version);
+			le32_to_cpu(hdev->asic_prop.cpucp_info.cpld_version));
 }
 
 static ssize_t cpucp_kernel_ver_show(struct device *dev,
@@ -153,8 +163,13 @@ static ssize_t infineon_ver_show(struct device *dev,
 {
 	struct hl_device *hdev = dev_get_drvdata(dev);
 
-	return sprintf(buf, "0x%04x\n",
-			hdev->asic_prop.cpucp_info.infineon_version);
+	if (hdev->asic_prop.cpucp_info.infineon_second_stage_version)
+		return sprintf(buf, "%#04x %#04x\n",
+			le32_to_cpu(hdev->asic_prop.cpucp_info.infineon_version),
+			le32_to_cpu(hdev->asic_prop.cpucp_info.infineon_second_stage_version));
+	else
+		return sprintf(buf, "%#04x\n",
+			le32_to_cpu(hdev->asic_prop.cpucp_info.infineon_version));
 }
 
 static ssize_t fuse_ver_show(struct device *dev, struct device_attribute *attr,
@@ -196,14 +211,14 @@ static ssize_t soft_reset_store(struct device *dev,
 		goto out;
 	}
 
-	if (!hdev->supports_soft_reset) {
-		dev_err(hdev->dev, "Device does not support soft-reset\n");
+	if (!hdev->asic_prop.allow_inference_soft_reset) {
+		dev_err(hdev->dev, "Device does not support inference soft-reset\n");
 		goto out;
 	}
 
-	dev_warn(hdev->dev, "Soft-Reset requested through sysfs\n");
+	dev_warn(hdev->dev, "Inference Soft-Reset requested through sysfs\n");
 
-	hl_device_reset(hdev, false, false);
+	hl_device_reset(hdev, 0);
 
 out:
 	return count;
@@ -226,7 +241,7 @@ static ssize_t hard_reset_store(struct device *dev,
 
 	dev_warn(hdev->dev, "Hard-Reset requested through sysfs\n");
 
-	hl_device_reset(hdev, true, false);
+	hl_device_reset(hdev, HL_DRV_RESET_HARD);
 
 out:
 	return count;
@@ -244,6 +259,9 @@ static ssize_t device_type_show(struct device *dev,
 		break;
 	case ASIC_GAUDI:
 		str = "GAUDI";
+		break;
+	case ASIC_GAUDI_SEC:
+		str = "GAUDI SEC";
 		break;
 	default:
 		dev_err(hdev->dev, "Unrecognized ASIC type %d\n",
@@ -270,16 +288,12 @@ static ssize_t status_show(struct device *dev, struct device_attribute *attr,
 				char *buf)
 {
 	struct hl_device *hdev = dev_get_drvdata(dev);
-	char *str;
+	char str[HL_STR_MAX];
 
-	if (atomic_read(&hdev->in_reset))
-		str = "In reset";
-	else if (hdev->disabled)
-		str = "Malfunction";
-	else if (hdev->needs_reset)
-		str = "Needs Reset";
-	else
-		str = "Operational";
+	strscpy(str, hdev->status[hl_device_status(hdev)], HL_STR_MAX);
+
+	/* use uppercase for backward compatibility */
+	str[0] = 'A' + (str[0] - 'a');
 
 	return sprintf(buf, "%s\n", str);
 }
@@ -289,7 +303,7 @@ static ssize_t soft_reset_cnt_show(struct device *dev,
 {
 	struct hl_device *hdev = dev_get_drvdata(dev);
 
-	return sprintf(buf, "%d\n", hdev->soft_reset_cnt);
+	return sprintf(buf, "%d\n", hdev->reset_info.soft_reset_cnt);
 }
 
 static ssize_t hard_reset_cnt_show(struct device *dev,
@@ -297,7 +311,7 @@ static ssize_t hard_reset_cnt_show(struct device *dev,
 {
 	struct hl_device *hdev = dev_get_drvdata(dev);
 
-	return sprintf(buf, "%d\n", hdev->hard_reset_cnt);
+	return sprintf(buf, "%d\n", hdev->reset_info.hard_reset_cnt);
 }
 
 static ssize_t max_power_show(struct device *dev, struct device_attribute *attr,
@@ -344,7 +358,7 @@ static ssize_t eeprom_read_handler(struct file *filp, struct kobject *kobj,
 			struct bin_attribute *attr, char *buf, loff_t offset,
 			size_t max_size)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct hl_device *hdev = dev_get_drvdata(dev);
 	char *data;
 	int rc;
@@ -410,8 +424,6 @@ static struct attribute *hl_dev_attrs[] = {
 	&dev_attr_max_power.attr,
 	&dev_attr_pci_addr.attr,
 	&dev_attr_preboot_btl_ver.attr,
-	&dev_attr_soft_reset.attr,
-	&dev_attr_soft_reset_cnt.attr,
 	&dev_attr_status.attr,
 	&dev_attr_thermal_ver.attr,
 	&dev_attr_uboot_ver.attr,
@@ -436,14 +448,24 @@ static const struct attribute_group *hl_dev_attr_groups[] = {
 	NULL,
 };
 
+static struct attribute *hl_dev_inference_attrs[] = {
+	&dev_attr_soft_reset.attr,
+	&dev_attr_soft_reset_cnt.attr,
+	NULL,
+};
+
+static struct attribute_group hl_dev_inference_attr_group = {
+	.attrs = hl_dev_inference_attrs,
+};
+
+static const struct attribute_group *hl_dev_inference_attr_groups[] = {
+	&hl_dev_inference_attr_group,
+	NULL,
+};
+
 int hl_sysfs_init(struct hl_device *hdev)
 {
 	int rc;
-
-	if (hdev->asic_type == ASIC_GOYA)
-		hdev->pm_mng_profile = PM_AUTO;
-	else
-		hdev->pm_mng_profile = PM_MANUAL;
 
 	hdev->max_power = hdev->asic_prop.max_power_default;
 
@@ -456,10 +478,25 @@ int hl_sysfs_init(struct hl_device *hdev)
 		return rc;
 	}
 
+	if (!hdev->asic_prop.allow_inference_soft_reset)
+		return 0;
+
+	rc = device_add_groups(hdev->dev, hl_dev_inference_attr_groups);
+	if (rc) {
+		dev_err(hdev->dev,
+			"Failed to add groups to device, error %d\n", rc);
+		return rc;
+	}
+
 	return 0;
 }
 
 void hl_sysfs_fini(struct hl_device *hdev)
 {
 	device_remove_groups(hdev->dev, hl_dev_attr_groups);
+
+	if (!hdev->asic_prop.allow_inference_soft_reset)
+		return;
+
+	device_remove_groups(hdev->dev, hl_dev_inference_attr_groups);
 }

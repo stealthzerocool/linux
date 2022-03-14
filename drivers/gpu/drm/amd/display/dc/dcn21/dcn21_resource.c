@@ -35,6 +35,8 @@
 #include "include/irq_service_interface.h"
 #include "dcn20/dcn20_resource.h"
 
+#include "dml/dcn20/dcn20_fpu.h"
+
 #include "clk_mgr.h"
 #include "dcn10/dcn10_hubp.h"
 #include "dcn10/dcn10_ipp.h"
@@ -55,13 +57,11 @@
 #include "dce/dce_audio.h"
 #include "dce/dce_hwseq.h"
 #include "virtual/virtual_stream_encoder.h"
-#include "dce110/dce110_resource.h"
 #include "dml/display_mode_vba.h"
 #include "dcn20/dcn20_dccg.h"
 #include "dcn21/dcn21_dccg.h"
 #include "dcn21_hubbub.h"
 #include "dcn10/dcn10_resource.h"
-#include "dce110/dce110_resource.h"
 #include "dce/dce_panel_cntl.h"
 
 #include "dcn20/dcn20_dwb.h"
@@ -111,6 +111,7 @@ struct _vcs_dpi_ip_params_st dcn2_1_ip = {
 	.max_page_table_levels = 4,
 	.pte_chunk_size_kbytes = 2,
 	.meta_chunk_size_kbytes = 2,
+	.min_meta_chunk_size_bytes = 256,
 	.writeback_chunk_size_kbytes = 2,
 	.line_buffer_size_bits = 789504,
 	.is_line_buffer_bpp_fixed = 0,
@@ -296,7 +297,7 @@ struct _vcs_dpi_soc_bounding_box_st dcn2_1_soc = {
 	.num_banks = 8,
 	.num_chans = 4,
 	.vmm_page_size_bytes = 4096,
-	.dram_clock_change_latency_us = 11.72,
+	.dram_clock_change_latency_us = 23.84,
 	.return_bus_width_bytes = 64,
 	.dispclk_dppclk_vco_speed_mhz = 3600,
 	.xfc_bus_transport_time_us = 4,
@@ -450,11 +451,11 @@ static const struct dccg_registers dccg_regs = {
 };
 
 static const struct dccg_shift dccg_shift = {
-		DCCG_MASK_SH_LIST_DCN2(__SHIFT)
+		DCCG_MASK_SH_LIST_DCN2_1(__SHIFT)
 };
 
 static const struct dccg_mask dccg_mask = {
-		DCCG_MASK_SH_LIST_DCN2(_MASK)
+		DCCG_MASK_SH_LIST_DCN2_1(_MASK)
 };
 
 #define opp_regs(id)\
@@ -783,9 +784,8 @@ static const struct dce_i2c_mask i2c_masks = {
 		I2C_COMMON_MASK_SH_LIST_DCN2(_MASK)
 };
 
-struct dce_i2c_hw *dcn21_i2c_hw_create(
-	struct dc_context *ctx,
-	uint32_t inst)
+static struct dce_i2c_hw *dcn21_i2c_hw_create(struct dc_context *ctx,
+					      uint32_t inst)
 {
 	struct dce_i2c_hw *dce_i2c_hw =
 		kzalloc(sizeof(struct dce_i2c_hw), GFP_KERNEL);
@@ -873,7 +873,7 @@ static const struct dc_debug_options debug_defaults_drv = {
 		.clock_trace = true,
 		.disable_pplib_clock_request = true,
 		.min_disp_clk_khz = 100000,
-		.pipe_split_policy = MPC_SPLIT_AVOID_MULT_DISP,
+		.pipe_split_policy = MPC_SPLIT_DYNAMIC,
 		.force_single_disp_pipe_split = false,
 		.disable_dcc = DCC_ENABLE,
 		.vsr_support = true,
@@ -883,7 +883,10 @@ static const struct dc_debug_options debug_defaults_drv = {
 		.scl_reset_length10 = true,
 		.sanity_checks = true,
 		.disable_48mhz_pwrdwn = false,
-		.usbc_combo_phy_reset_wa = true
+		.usbc_combo_phy_reset_wa = true,
+		.dmub_command_table = true,
+		.use_max_lb = true,
+		.optimize_edp_link_rate = true
 };
 
 static const struct dc_debug_options debug_defaults_diags = {
@@ -899,13 +902,16 @@ static const struct dc_debug_options debug_defaults_diags = {
 		.disable_stutter = true,
 		.disable_48mhz_pwrdwn = true,
 		.disable_psr = true,
-		.enable_tri_buf = true
+		.enable_tri_buf = true,
+		.use_max_lb = true
 };
 
 enum dcn20_clk_src_array_id {
 	DCN20_CLK_SRC_PLL0,
 	DCN20_CLK_SRC_PLL1,
 	DCN20_CLK_SRC_PLL2,
+	DCN20_CLK_SRC_PLL3,
+	DCN20_CLK_SRC_PLL4,
 	DCN20_CLK_SRC_TOTAL_DCN21
 };
 
@@ -1060,8 +1066,6 @@ static void patch_bounding_box(struct dc *dc, struct _vcs_dpi_soc_bounding_box_s
 {
 	int i;
 
-	DC_FP_START();
-
 	if (dc->bb_overrides.sr_exit_time_ns) {
 		for (i = 0; i < WM_SET_COUNT; i++) {
 			  dc->clk_mgr->bw_params->wm_table.entries[i].sr_exit_time_us =
@@ -1086,11 +1090,9 @@ static void patch_bounding_box(struct dc *dc, struct _vcs_dpi_soc_bounding_box_s
 				dc->bb_overrides.dram_clock_change_latency_ns / 1000.0;
 		}
 	}
-
-	DC_FP_END();
 }
 
-void dcn21_calculate_wm(
+static void dcn21_calculate_wm(
 		struct dc *dc, struct dc_state *context,
 		display_e2e_pipe_params_st *pipes,
 		int *out_pipe_cnt,
@@ -1327,8 +1329,8 @@ validate_out:
 	return out;
 }
 
-bool dcn21_validate_bandwidth(struct dc *dc, struct dc_state *context,
-		bool fast_validate)
+static noinline bool dcn21_validate_bandwidth_fp(struct dc *dc,
+		struct dc_state *context, bool fast_validate)
 {
 	bool out = false;
 
@@ -1337,7 +1339,7 @@ bool dcn21_validate_bandwidth(struct dc *dc, struct dc_state *context,
 	int vlevel = 0;
 	int pipe_split_from[MAX_PIPES];
 	int pipe_cnt = 0;
-	display_e2e_pipe_params_st *pipes = kzalloc(dc->res_pool->pipe_count * sizeof(display_e2e_pipe_params_st), GFP_KERNEL);
+	display_e2e_pipe_params_st *pipes = kzalloc(dc->res_pool->pipe_count * sizeof(display_e2e_pipe_params_st), GFP_ATOMIC);
 	DC_LOGGER_INIT(dc->ctx->logger);
 
 	BW_VAL_TRACE_COUNT();
@@ -1381,6 +1383,22 @@ validate_out:
 
 	return out;
 }
+
+/*
+ * Some of the functions further below use the FPU, so we need to wrap this
+ * with DC_FP_START()/DC_FP_END(). Use the same approach as for
+ * dcn20_validate_bandwidth in dcn20_resource.c.
+ */
+static bool dcn21_validate_bandwidth(struct dc *dc, struct dc_state *context,
+		bool fast_validate)
+{
+	bool voltage_supported;
+	DC_FP_START();
+	voltage_supported = dcn21_validate_bandwidth_fp(dc, context, fast_validate);
+	DC_FP_END();
+	return voltage_supported;
+}
+
 static void dcn21_destroy_resource_pool(struct resource_pool **pool)
 {
 	struct dcn21_resource_pool *dcn21_pool = TO_DCN21_RES_POOL(*pool);
@@ -1461,8 +1479,8 @@ static struct hubbub *dcn21_hubbub_create(struct dc_context *ctx)
 	return &hubbub->base;
 }
 
-struct output_pixel_processor *dcn21_opp_create(
-	struct dc_context *ctx, uint32_t inst)
+static struct output_pixel_processor *dcn21_opp_create(struct dc_context *ctx,
+						       uint32_t inst)
 {
 	struct dcn20_opp *opp =
 		kzalloc(sizeof(struct dcn20_opp), GFP_KERNEL);
@@ -1477,9 +1495,8 @@ struct output_pixel_processor *dcn21_opp_create(
 	return &opp->base;
 }
 
-struct timing_generator *dcn21_timing_generator_create(
-		struct dc_context *ctx,
-		uint32_t instance)
+static struct timing_generator *dcn21_timing_generator_create(struct dc_context *ctx,
+							      uint32_t instance)
 {
 	struct optc *tgn10 =
 		kzalloc(sizeof(struct optc), GFP_KERNEL);
@@ -1499,7 +1516,7 @@ struct timing_generator *dcn21_timing_generator_create(
 	return &tgn10->base;
 }
 
-struct mpc *dcn21_mpc_create(struct dc_context *ctx)
+static struct mpc *dcn21_mpc_create(struct dc_context *ctx)
 {
 	struct dcn20_mpc *mpc20 = kzalloc(sizeof(struct dcn20_mpc),
 					  GFP_KERNEL);
@@ -1526,8 +1543,8 @@ static void read_dce_straps(
 }
 
 
-struct display_stream_compressor *dcn21_dsc_create(
-	struct dc_context *ctx, uint32_t inst)
+static struct display_stream_compressor *dcn21_dsc_create(struct dc_context *ctx,
+							  uint32_t inst)
 {
 	struct dcn20_dsc *dsc =
 		kzalloc(sizeof(struct dcn20_dsc), GFP_KERNEL);
@@ -1581,6 +1598,11 @@ static void update_bw_bounding_box(struct dc *dc, struct clk_bw_params *bw_param
 	dcn2_1_soc.num_chans = bw_params->num_channels;
 
 	ASSERT(clk_table->num_entries);
+	/* Copy dcn2_1_soc.clock_limits to clock_limits to avoid copying over null states later */
+	for (i = 0; i < dcn2_1_soc.num_states + 1; i++) {
+		clock_limits[i] = dcn2_1_soc.clock_limits[i];
+	}
+
 	for (i = 0; i < clk_table->num_entries; i++) {
 		/* loop backwards*/
 		for (closest_clk_lvl = 0, j = dcn2_1_soc.num_states - 1; j >= 0; j--) {
@@ -1614,11 +1636,11 @@ static void update_bw_bounding_box(struct dc *dc, struct clk_bw_params *bw_param
 		dcn2_1_soc.clock_limits[i] = clock_limits[i];
 	if (clk_table->num_entries) {
 		dcn2_1_soc.num_states = clk_table->num_entries + 1;
+		/* fill in min DF PState */
+		dcn2_1_soc.clock_limits[1] = construct_low_pstate_lvl(clk_table, closest_clk_lvl);
 		/* duplicate last level */
 		dcn2_1_soc.clock_limits[dcn2_1_soc.num_states] = dcn2_1_soc.clock_limits[dcn2_1_soc.num_states - 1];
 		dcn2_1_soc.clock_limits[dcn2_1_soc.num_states].state = dcn2_1_soc.num_states;
-		/* fill in min DF PState */
-		dcn2_1_soc.clock_limits[1] = construct_low_pstate_lvl(clk_table, closest_clk_lvl);
 	}
 
 	dml_init_instance(&dc->dml, &dcn2_1_soc, &dcn2_1_ip, DML_PROJECT_DCN21);
@@ -1659,9 +1681,8 @@ static struct dc_cap_funcs cap_funcs = {
 	.get_dcc_compression_cap = dcn20_get_dcc_compression_cap
 };
 
-struct stream_encoder *dcn21_stream_encoder_create(
-	enum engine_id eng_id,
-	struct dc_context *ctx)
+static struct stream_encoder *dcn21_stream_encoder_create(enum engine_id eng_id,
+							  struct dc_context *ctx)
 {
 	struct dcn10_stream_encoder *enc1 =
 		kzalloc(sizeof(struct dcn10_stream_encoder), GFP_KERNEL);
@@ -1893,7 +1914,7 @@ static int dcn21_populate_dml_pipes_from_context(
 	return pipe_cnt;
 }
 
-enum dc_status dcn21_patch_unknown_plane_state(struct dc_plane_state *plane_state)
+static enum dc_status dcn21_patch_unknown_plane_state(struct dc_plane_state *plane_state)
 {
 	enum dc_status result = DC_OK;
 
@@ -1961,6 +1982,8 @@ static bool dcn21_resource_construct(
 	dc->caps.dmdata_alloc_size = 2048;
 
 	dc->caps.max_slave_planes = 1;
+	dc->caps.max_slave_yuv_planes = 1;
+	dc->caps.max_slave_rgb_planes = 1;
 	dc->caps.post_blend_color_processing = true;
 	dc->caps.force_dp_tps4_for_cp2520 = true;
 	dc->caps.extended_aux_timeout_support = true;
@@ -2002,6 +2025,8 @@ static bool dcn21_resource_construct(
 	dc->caps.color.mpc.ogam_rom_caps.hlg = 0;
 	dc->caps.color.mpc.ocsc = 1;
 
+	dc->caps.hdmi_frl_pcon_support = true;
+
 	if (dc->ctx->dce_environment == DCE_ENV_PRODUCTION_DRV)
 		dc->debug = debug_defaults_drv;
 	else if (dc->ctx->dce_environment == DCE_ENV_FPGA_MAXIMUS) {
@@ -2030,6 +2055,14 @@ static bool dcn21_resource_construct(
 			dcn21_clock_source_create(ctx, ctx->dc_bios,
 				CLOCK_SOURCE_COMBO_PHY_PLL2,
 				&clk_src_regs[2], false);
+	pool->base.clock_sources[DCN20_CLK_SRC_PLL3] =
+			dcn21_clock_source_create(ctx, ctx->dc_bios,
+				CLOCK_SOURCE_COMBO_PHY_PLL3,
+				&clk_src_regs[3], false);
+	pool->base.clock_sources[DCN20_CLK_SRC_PLL4] =
+			dcn21_clock_source_create(ctx, ctx->dc_bios,
+				CLOCK_SOURCE_COMBO_PHY_PLL4,
+				&clk_src_regs[4], false);
 
 	pool->base.clk_src_count = DCN20_CLK_SRC_TOTAL_DCN21;
 

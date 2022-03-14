@@ -35,7 +35,6 @@ problems and bugs in particular.
    :maxdepth: 1
 
    reporting-issues
-   Reporting bugs (obsolete) <reporting-bugs>
    security-bugs
    bug-hunting
    bug-bisect
@@ -83,6 +82,7 @@ configure specific aspects of kernel behavior to your liking.
    edid
    efi-stub
    ext4
+   filesystem-monitoring
    nfs/index
    gpio/index
    highuid

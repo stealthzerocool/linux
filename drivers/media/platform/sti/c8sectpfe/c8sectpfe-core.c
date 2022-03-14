@@ -28,7 +28,6 @@
 #include <linux/usb.h>
 #include <linux/slab.h>
 #include <linux/time.h>
-#include <linux/version.h>
 #include <linux/wait.h>
 #include <linux/pinctrl/pinctrl.h>
 
@@ -655,7 +654,7 @@ static irqreturn_t c8sectpfe_error_irq_handler(int irq, void *priv)
 
 	/*
 	 * TODO FIXME we should detect some error conditions here
-	 * and ideally so something about them!
+	 * and ideally do something about them!
 	 */
 
 	return IRQ_HANDLED;
@@ -826,6 +825,7 @@ static int c8sectpfe_probe(struct platform_device *pdev)
 			dev_err(dev,
 				"reset gpio for tsin%d not valid (gpio=%d)\n",
 				tsin->tsin_id, tsin->rst_gpio);
+			ret = -EINVAL;
 			goto err_node_put;
 		}
 
@@ -925,17 +925,12 @@ static int c8sectpfe_remove(struct platform_device *pdev)
 static int configure_channels(struct c8sectpfei *fei)
 {
 	int index = 0, ret;
-	struct channel_info *tsin;
 	struct device_node *child, *np = fei->dev->of_node;
 
 	/* iterate round each tsin and configure memdma descriptor and IB hw */
 	for_each_child_of_node(np, child) {
-
-		tsin = fei->channel_data[index];
-
 		ret = configure_memdma_and_inputblock(fei,
 						fei->channel_data[index]);
-
 		if (ret) {
 			dev_err(fei->dev,
 				"configure_memdma_and_inputblock failed\n");
@@ -947,10 +942,9 @@ static int configure_channels(struct c8sectpfei *fei)
 	return 0;
 
 err_unmap:
-	for (index = 0; index < fei->tsin_count; index++) {
-		tsin = fei->channel_data[index];
-		free_input_block(fei, tsin);
-	}
+	while (--index >= 0)
+		free_input_block(fei, fei->channel_data[index]);
+
 	return ret;
 }
 

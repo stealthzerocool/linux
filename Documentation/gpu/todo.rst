@@ -23,6 +23,9 @@ Advanced: Tricky tasks that need fairly good understanding of the DRM subsystem
 and graphics topics. Generally need the relevant hardware for development and
 testing.
 
+Expert: Only attempt these if you've successfully completed some tricky
+refactorings already and are an expert in the specific area
+
 Subsystem-wide refactorings
 ===========================
 
@@ -168,6 +171,22 @@ Contact: Daniel Vetter, respective driver maintainers
 
 Level: Advanced
 
+Move Buffer Object Locking to dma_resv_lock()
+---------------------------------------------
+
+Many drivers have their own per-object locking scheme, usually using
+mutex_lock(). This causes all kinds of trouble for buffer sharing, since
+depending which driver is the exporter and importer, the locking hierarchy is
+reversed.
+
+To solve this we need one standard per-object locking mechanism, which is
+dma_resv_lock(). This lock needs to be called as the outermost lock, with all
+other driver specific per-object locks removed. The problem is tha rolling out
+the actual change to the locking contract is a flag day, due to struct dma_buf
+buffer sharing.
+
+Level: Expert
+
 Convert logging to drm_* functions with drm_device paramater
 ------------------------------------------------------------
 
@@ -249,17 +268,6 @@ Contact: Daniel Vetter
 
 Level: Intermediate
 
-Clean up mmap forwarding
-------------------------
-
-A lot of drivers forward gem mmap calls to dma-buf mmap for imported buffers.
-And also a lot of them forward dma-buf mmap to the gem mmap implementations.
-There's drm_gem_prime_mmap() for this now, but still needs to be rolled out.
-
-Contact: Daniel Vetter
-
-Level: Intermediate
-
 Generic fbdev defio support
 ---------------------------
 
@@ -292,27 +300,6 @@ Contact: Daniel Vetter, Noralf Tronnes
 
 Level: Advanced
 
-Garbage collect fbdev scrolling acceleration
---------------------------------------------
-
-Scroll acceleration is disabled in fbcon by hard-wiring p->scrollmode =
-SCROLL_REDRAW. There's a ton of code this will allow us to remove:
-
-- lots of code in fbcon.c
-
-- a bunch of the hooks in fbcon_ops, maybe the remaining hooks could be called
-  directly instead of the function table (with a switch on p->rotate)
-
-- fb_copyarea is unused after this, and can be deleted from all drivers
-
-Note that not all acceleration code can be deleted, since clearing and cursor
-support is still accelerated, which might be good candidates for further
-deletion projects.
-
-Contact: Daniel Vetter
-
-Level: Intermediate
-
 idr_init_base()
 ---------------
 
@@ -333,23 +320,6 @@ DRM driver struct. This is now the preferred way. Callbacks in drivers have been
 converted, except for struct drm_driver.gem_prime_mmap.
 
 Level: Intermediate
-
-Use DRM_MODESET_LOCK_ALL_* helpers instead of boilerplate
----------------------------------------------------------
-
-For cases where drivers are attempting to grab the modeset locks with a local
-acquire context. Replace the boilerplate code surrounding
-drm_modeset_lock_all_ctx() with DRM_MODESET_LOCK_ALL_BEGIN() and
-DRM_MODESET_LOCK_ALL_END() instead.
-
-This should also be done for all places where drm_modeset_lock_all() is still
-used.
-
-As a reference, take a look at the conversions already completed in drm core.
-
-Contact: Sean Paul, respective driver maintainers
-
-Level: Starter
 
 Rename CMA helpers to DMA helpers
 ---------------------------------
@@ -440,52 +410,6 @@ Contact: Emil Velikov, respective driver maintainers
 
 Level: Intermediate
 
-Plumb drm_atomic_state all over
--------------------------------
-
-Currently various atomic functions take just a single or a handful of
-object states (eg. plane state). While that single object state can
-suffice for some simple cases, we often have to dig out additional
-object states for dealing with various dependencies between the individual
-objects or the hardware they represent. The process of digging out the
-additional states is rather non-intuitive and error prone.
-
-To fix that most functions should rather take the overall
-drm_atomic_state as one of their parameters. The other parameters
-would generally be the object(s) we mainly want to interact with.
-
-For example, instead of
-
-.. code-block:: c
-
-   int (*atomic_check)(struct drm_plane *plane, struct drm_plane_state *state);
-
-we would have something like
-
-.. code-block:: c
-
-   int (*atomic_check)(struct drm_plane *plane, struct drm_atomic_state *state);
-
-The implementation can then trivially gain access to any required object
-state(s) via drm_atomic_get_plane_state(), drm_atomic_get_new_plane_state(),
-drm_atomic_get_old_plane_state(), and their equivalents for
-other object types.
-
-Additionally many drivers currently access the object->state pointer
-directly in their commit functions. That is not going to work if we
-eg. want to allow deeper commit pipelines as those pointers could
-then point to the states corresponding to a future commit instead of
-the current commit we're trying to process. Also non-blocking commits
-execute locklessly so there are serious concerns with dereferencing
-the object->state pointers without holding the locks that protect them.
-Use of drm_atomic_get_new_plane_state(), drm_atomic_get_old_plane_state(),
-etc. avoids these problems as well since they relate to a specific
-commit via the passed in drm_atomic_state.
-
-Contact: Ville Syrjälä, Daniel Vetter
-
-Level: Intermediate
-
 Use struct dma_buf_map throughout codebase
 ------------------------------------------
 
@@ -501,6 +425,21 @@ The task is to use struct dma_buf_map where it makes sense.
 * Framebuffer copying and blitting helpers should operate on struct dma_buf_map.
 
 Contact: Thomas Zimmermann <tzimmermann@suse.de>, Christian König, Daniel Vetter
+
+Level: Intermediate
+
+Review all drivers for setting struct drm_mode_config.{max_width,max_height} correctly
+--------------------------------------------------------------------------------------
+
+The values in struct drm_mode_config.{max_width,max_height} describe the
+maximum supported framebuffer size. It's the virtual screen size, but many
+drivers treat it like limitations of the physical resolution.
+
+The maximum width depends on the hardware's maximum scanline pitch. The
+maximum height depends on the amount of addressable video memory. Review all
+drivers to initialize the fields to the correct values.
+
+Contact: Thomas Zimmermann <tzimmermann@suse.de>
 
 Level: Intermediate
 
@@ -573,26 +512,53 @@ There's a bunch of issues with it:
   this (together with the drm_minor->drm_device move) would allow us to remove
   debugfs_init.
 
+Previous RFC that hasn't landed yet: https://lore.kernel.org/dri-devel/20200513114130.28641-2-wambui.karugax@gmail.com/
+
 Contact: Daniel Vetter
 
 Level: Intermediate
 
-KMS cleanups
-------------
+Object lifetime fixes
+---------------------
 
-Some of these date from the very introduction of KMS in 2008 ...
+There's two related issues here
 
-- Make ->funcs and ->helper_private vtables optional. There's a bunch of empty
-  function tables in drivers, but before we can remove them we need to make sure
-  that all the users in helpers and drivers do correctly check for a NULL
-  vtable.
+- Cleanup up the various ->destroy callbacks, which often are all the same
+  simple code.
 
-- Cleanup up the various ->destroy callbacks. A lot of them just wrapt the
-  drm_*_cleanup implementations and can be removed. Some tack a kfree() at the
-  end, for which we could add drm_*_cleanup_kfree(). And then there's the (for
-  historical reasons) misnamed drm_primary_helper_destroy() function.
+- Lots of drivers erroneously allocate DRM modeset objects using devm_kzalloc,
+  which results in use-after free issues on driver unload. This can be serious
+  trouble even for drivers for hardware integrated on the SoC due to
+  EPROBE_DEFERRED backoff.
+
+Both these problems can be solved by switching over to drmm_kzalloc(), and the
+various convenience wrappers provided, e.g. drmm_crtc_alloc_with_planes(),
+drmm_universal_plane_alloc(), ... and so on.
+
+Contact: Daniel Vetter
 
 Level: Intermediate
+
+Remove automatic page mapping from dma-buf importing
+----------------------------------------------------
+
+When importing dma-bufs, the dma-buf and PRIME frameworks automatically map
+imported pages into the importer's DMA area. drm_gem_prime_fd_to_handle() and
+drm_gem_prime_handle_to_fd() require that importers call dma_buf_attach()
+even if they never do actual device DMA, but only CPU access through
+dma_buf_vmap(). This is a problem for USB devices, which do not support DMA
+operations.
+
+To fix the issue, automatic page mappings should be removed from the
+buffer-sharing code. Fixing this is a bit more involved, since the import/export
+cache is also tied to &drm_gem_object.import_attach. Meanwhile we paper over
+this problem for USB devices by fishing out the USB host controller device, as
+long as that supports DMA. Otherwise importing can still needlessly fail.
+
+Contact: Thomas Zimmermann <tzimmermann@suse.de>, Daniel Vetter
+
+Level: Advanced
+
 
 Better Testing
 ==============
@@ -626,8 +592,6 @@ See the documentation of :ref:`VKMS <vkms>` for more details. This is an ideal
 internship task, since it only requires a virtual machine and can be sized to
 fit the available time.
 
-Contact: Daniel Vetter
-
 Level: See details
 
 Backlight Refactoring
@@ -658,6 +622,17 @@ See drivers/gpu/drm/amd/display/TODO for tasks.
 
 Contact: Harry Wentland, Alex Deucher
 
+vmwgfx: Replace hashtable with Linux' implementation
+----------------------------------------------------
+
+The vmwgfx driver uses its own hashtable implementation. Replace the
+code with Linux' implementation and update the callers. It's mostly a
+refactoring task, but the interfaces are different.
+
+Contact: Zack Rusin, Thomas Zimmermann <tzimmermann@suse.de>
+
+Level: Intermediate
+
 Bootsplash
 ==========
 
@@ -669,7 +644,7 @@ for fbdev.
   https://patchwork.freedesktop.org/patch/306579/
 
 - [RFC PATCH v2 00/13] Kernel based bootsplash
-  https://lkml.org/lkml/2017/12/13/764
+  https://lore.kernel.org/r/20171213194755.3409-1-mstaudt@suse.de
 
 Contact: Sam Ravnborg
 
@@ -681,7 +656,7 @@ Outside DRM
 Convert fbdev drivers to DRM
 ----------------------------
 
-There are plenty of fbdev drivers for older hardware. Some hwardware has
+There are plenty of fbdev drivers for older hardware. Some hardware has
 become obsolete, but some still provides good(-enough) framebuffers. The
 drivers that are still useful should be converted to DRM and afterwards
 removed from fbdev.

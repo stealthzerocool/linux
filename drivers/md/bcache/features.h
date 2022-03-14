@@ -2,9 +2,10 @@
 #ifndef _BCACHE_FEATURES_H
 #define _BCACHE_FEATURES_H
 
-#include <linux/bcache.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
+
+#include "bcache_ondisk.h"
 
 #define BCH_FEATURE_COMPAT		0
 #define BCH_FEATURE_RO_COMPAT		1
@@ -33,6 +34,8 @@
 #define BCH_FEATURE_COMPAT_FUNCS(name, flagname) \
 static inline int bch_has_feature_##name(struct cache_sb *sb) \
 { \
+	if (sb->version < BCACHE_SB_VERSION_CDEV_WITH_FEATURES) \
+		return 0; \
 	return (((sb)->feature_compat & \
 		BCH##_FEATURE_COMPAT_##flagname) != 0); \
 } \
@@ -50,6 +53,8 @@ static inline void bch_clear_feature_##name(struct cache_sb *sb) \
 #define BCH_FEATURE_RO_COMPAT_FUNCS(name, flagname) \
 static inline int bch_has_feature_##name(struct cache_sb *sb) \
 { \
+	if (sb->version < BCACHE_SB_VERSION_CDEV_WITH_FEATURES) \
+		return 0; \
 	return (((sb)->feature_ro_compat & \
 		BCH##_FEATURE_RO_COMPAT_##flagname) != 0); \
 } \
@@ -67,6 +72,8 @@ static inline void bch_clear_feature_##name(struct cache_sb *sb) \
 #define BCH_FEATURE_INCOMPAT_FUNCS(name, flagname) \
 static inline int bch_has_feature_##name(struct cache_sb *sb) \
 { \
+	if (sb->version < BCACHE_SB_VERSION_CDEV_WITH_FEATURES) \
+		return 0; \
 	return (((sb)->feature_incompat & \
 		BCH##_FEATURE_INCOMPAT_##flagname) != 0); \
 } \

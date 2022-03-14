@@ -66,6 +66,8 @@ struct rtc_class_ops {
 	int (*alarm_irq_enable)(struct device *, unsigned int enabled);
 	int (*read_offset)(struct device *, long *offset);
 	int (*set_offset)(struct device *, long offset);
+	int (*param_get)(struct device *, struct rtc_param *param);
+	int (*param_set)(struct device *, struct rtc_param *param);
 };
 
 struct rtc_device;
@@ -80,6 +82,7 @@ struct rtc_timer {
 
 /* flags */
 #define RTC_DEV_BUSY 0
+#define RTC_NO_CDEV  1
 
 struct rtc_device {
 	struct device dev;
@@ -140,6 +143,8 @@ struct rtc_device {
 	 * and  (tsched + set_offset_nsec) % NSEC_PER_SEC == 0
 	 */
 	unsigned long set_offset_nsec;
+
+	unsigned long features[BITS_TO_LONGS(RTC_FEATURE_CNT)];
 
 	time64_t range_min;
 	timeu64_t range_max;

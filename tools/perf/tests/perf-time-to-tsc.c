@@ -20,6 +20,18 @@
 #include "tsc.h"
 #include "mmap.h"
 #include "tests.h"
+#include "pmu.h"
+#include "pmu-hybrid.h"
+
+/*
+ * Except x86_64/i386 and Arm64, other archs don't support TSC in perf.  Just
+ * enable the test for x86_64/i386 and Arm64 archs.
+ */
+#if defined(__x86_64__) || defined(__i386__) || defined(__aarch64__)
+#define TSC_IS_SUPPORTED 1
+#else
+#define TSC_IS_SUPPORTED 0
+#endif
 
 #define CHECK__(x) {				\
 	while ((x) < 0) {			\
@@ -43,7 +55,7 @@
  * %0 is returned, otherwise %-1 is returned.  If TSC conversion is not
  * supported then then the test passes but " (not supported)" is printed.
  */
-int test__perf_time_to_tsc(struct test *test __maybe_unused, int subtest __maybe_unused)
+static int test__perf_time_to_tsc(struct test_suite *test __maybe_unused, int subtest __maybe_unused)
 {
 	struct record_opts opts = {
 		.mmap_pages	     = UINT_MAX,
@@ -67,6 +79,11 @@ int test__perf_time_to_tsc(struct test *test __maybe_unused, int subtest __maybe
 	u64 test_time, comm1_time = 0, comm2_time = 0;
 	struct mmap *md;
 
+	if (!TSC_IS_SUPPORTED) {
+		pr_debug("Test not supported on this architecture");
+		return TEST_SKIP;
+	}
+
 	threads = thread_map__new(-1, getpid(), UINT_MAX);
 	CHECK_NOT_NULL__(threads);
 
@@ -87,6 +104,17 @@ int test__perf_time_to_tsc(struct test *test __maybe_unused, int subtest __maybe
 	evsel->core.attr.comm = 1;
 	evsel->core.attr.disabled = 1;
 	evsel->core.attr.enable_on_exec = 0;
+
+	/*
+	 * For hybrid "cycles:u", it creates two events.
+	 * Init the second evsel here.
+	 */
+	if (perf_pmu__has_hybrid() && perf_pmu__hybrid_mounted("cpu_atom")) {
+		evsel = evsel__next(evsel);
+		evsel->core.attr.comm = 1;
+		evsel->core.attr.disabled = 1;
+		evsel->core.attr.enable_on_exec = 0;
+	}
 
 	CHECK__(evlist__open(evlist));
 
@@ -167,18 +195,9 @@ next_event:
 
 out_err:
 	evlist__delete(evlist);
+	perf_cpu_map__put(cpus);
+	perf_thread_map__put(threads);
 	return err;
 }
 
-bool test__tsc_is_supported(void)
-{
-	/*
-	 * Except x86_64/i386 and Arm64, other archs don't support TSC in perf.
-	 * Just enable the test for x86_64/i386 and Arm64 archs.
-	 */
-#if defined(__x86_64__) || defined(__i386__) || defined(__aarch64__)
-	return true;
-#else
-	return false;
-#endif
-}
+DEFINE_SUITE("Convert perf time to TSC", perf_time_to_tsc);

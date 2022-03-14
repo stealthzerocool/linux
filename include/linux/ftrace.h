@@ -30,16 +30,26 @@
 #define ARCH_SUPPORTS_FTRACE_OPS 0
 #endif
 
+#ifdef CONFIG_FUNCTION_TRACER
+struct ftrace_ops;
+struct ftrace_regs;
 /*
  * If the arch's mcount caller does not support all of ftrace's
  * features, then it must call an indirect function that
- * does. Or at least does enough to prevent any unwelcomed side effects.
+ * does. Or at least does enough to prevent any unwelcome side effects.
+ *
+ * Also define the function prototype that these architectures use
+ * to call the ftrace_ops_list_func().
  */
 #if !ARCH_SUPPORTS_FTRACE_OPS
 # define FTRACE_FORCE_LIST_FUNC 1
+void arch_ftrace_ops_list_func(unsigned long ip, unsigned long parent_ip);
 #else
 # define FTRACE_FORCE_LIST_FUNC 0
+void arch_ftrace_ops_list_func(unsigned long ip, unsigned long parent_ip,
+			       struct ftrace_ops *op, struct ftrace_regs *fregs);
 #endif
+#endif /* CONFIG_FUNCTION_TRACER */
 
 /* Main tracing buffer and events set up */
 #ifdef CONFIG_TRACING
@@ -87,8 +97,6 @@ extern int ftrace_enabled;
 extern int
 ftrace_enable_sysctl(struct ctl_table *table, int write,
 		     void *buffer, size_t *lenp, loff_t *ppos);
-
-struct ftrace_ops;
 
 #ifndef CONFIG_HAVE_DYNAMIC_FTRACE_WITH_ARGS
 
@@ -316,7 +324,12 @@ int ftrace_modify_direct_caller(struct ftrace_func_entry *entry,
 				unsigned long old_addr,
 				unsigned long new_addr);
 unsigned long ftrace_find_rec_direct(unsigned long ip);
+int register_ftrace_direct_multi(struct ftrace_ops *ops, unsigned long addr);
+int unregister_ftrace_direct_multi(struct ftrace_ops *ops, unsigned long addr);
+int modify_ftrace_direct_multi(struct ftrace_ops *ops, unsigned long addr);
+
 #else
+struct ftrace_ops;
 # define ftrace_direct_func_count 0
 static inline int register_ftrace_direct(unsigned long ip, unsigned long addr)
 {
@@ -345,6 +358,18 @@ static inline int ftrace_modify_direct_caller(struct ftrace_func_entry *entry,
 static inline unsigned long ftrace_find_rec_direct(unsigned long ip)
 {
 	return 0;
+}
+static inline int register_ftrace_direct_multi(struct ftrace_ops *ops, unsigned long addr)
+{
+	return -ENODEV;
+}
+static inline int unregister_ftrace_direct_multi(struct ftrace_ops *ops, unsigned long addr)
+{
+	return -ENODEV;
+}
+static inline int modify_ftrace_direct_multi(struct ftrace_ops *ops, unsigned long addr)
+{
+	return -ENODEV;
 }
 #endif /* CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS */
 
@@ -389,7 +414,7 @@ DECLARE_PER_CPU(int, disable_stack_tracer);
  */
 static inline void stack_tracer_disable(void)
 {
-	/* Preemption or interupts must be disabled */
+	/* Preemption or interrupts must be disabled */
 	if (IS_ENABLED(CONFIG_DEBUG_PREEMPT))
 		WARN_ON_ONCE(!preempt_count() || !irqs_disabled());
 	this_cpu_inc(disable_stack_tracer);
@@ -485,7 +510,6 @@ struct dyn_ftrace {
 	struct dyn_arch_ftrace	arch;
 };
 
-int ftrace_force_update(void);
 int ftrace_set_filter_ip(struct ftrace_ops *ops, unsigned long ip,
 			 int remove, int reset);
 int ftrace_set_filter(struct ftrace_ops *ops, unsigned char *buf,
@@ -644,6 +668,22 @@ static inline int ftrace_disable_ftrace_graph_caller(void) { return 0; }
 extern int ftrace_make_nop(struct module *mod,
 			   struct dyn_ftrace *rec, unsigned long addr);
 
+/**
+ * ftrace_need_init_nop - return whether nop call sites should be initialized
+ *
+ * Normally the compiler's -mnop-mcount generates suitable nops, so we don't
+ * need to call ftrace_init_nop() if the code is built with that flag.
+ * Architectures where this is not always the case may define their own
+ * condition.
+ *
+ * Return must be:
+ *  0	    if ftrace_init_nop() should be called
+ *  Nonzero if ftrace_init_nop() should not be called
+ */
+
+#ifndef ftrace_need_init_nop
+#define ftrace_need_init_nop() (!__is_defined(CC_USING_NOP_MCOUNT))
+#endif
 
 /**
  * ftrace_init_nop - initialize a nop call site
@@ -740,7 +780,6 @@ extern void ftrace_disable_daemon(void);
 extern void ftrace_enable_daemon(void);
 #else /* CONFIG_DYNAMIC_FTRACE */
 static inline int skip_trace(unsigned long ip) { return 0; }
-static inline int ftrace_force_update(void) { return 0; }
 static inline void ftrace_disable_daemon(void) { }
 static inline void ftrace_enable_daemon(void) { }
 static inline void ftrace_module_init(struct module *mod) { }
@@ -780,6 +819,15 @@ static inline bool is_ftrace_trampoline(unsigned long addr)
 	return false;
 }
 #endif /* CONFIG_DYNAMIC_FTRACE */
+
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+#ifndef ftrace_graph_func
+#define ftrace_graph_func ftrace_stub
+#define FTRACE_OPS_GRAPH_STUB FTRACE_OPS_FL_STUB
+#else
+#define FTRACE_OPS_GRAPH_STUB 0
+#endif
+#endif /* CONFIG_FUNCTION_GRAPH_TRACER */
 
 /* totally disable ftrace - can not re-enable after this */
 void ftrace_kill(void);

@@ -160,7 +160,7 @@ static bool mtk_nor_match_read(const struct spi_mem_op *op)
 {
 	int dummy = 0;
 
-	if (op->dummy.buswidth)
+	if (op->dummy.nbytes)
 		dummy = op->dummy.nbytes * BITS_PER_BYTE / op->dummy.buswidth;
 
 	if ((op->data.buswidth == 2) || (op->data.buswidth == 4)) {
@@ -292,7 +292,7 @@ static bool mtk_nor_supports_op(struct spi_mem *mem,
 		return false;
 
 	if ((op->addr.nbytes == 3) || (op->addr.nbytes == 4)) {
-		switch(op->data.dir) {
+		switch (op->data.dir) {
 		case SPI_MEM_DATA_IN:
 			if (mtk_nor_match_read(op))
 				return true;

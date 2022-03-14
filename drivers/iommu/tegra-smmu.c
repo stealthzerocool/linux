@@ -376,9 +376,9 @@ static void tegra_smmu_enable(struct tegra_smmu *smmu, unsigned int swgroup,
 		if (client->swgroup != swgroup)
 			continue;
 
-		value = smmu_readl(smmu, client->smmu.reg);
-		value |= BIT(client->smmu.bit);
-		smmu_writel(smmu, value, client->smmu.reg);
+		value = smmu_readl(smmu, client->regs.smmu.reg);
+		value |= BIT(client->regs.smmu.bit);
+		smmu_writel(smmu, value, client->regs.smmu.reg);
 	}
 }
 
@@ -404,9 +404,9 @@ static void tegra_smmu_disable(struct tegra_smmu *smmu, unsigned int swgroup,
 		if (client->swgroup != swgroup)
 			continue;
 
-		value = smmu_readl(smmu, client->smmu.reg);
-		value &= ~BIT(client->smmu.bit);
-		smmu_writel(smmu, value, client->smmu.reg);
+		value = smmu_readl(smmu, client->regs.smmu.reg);
+		value &= ~BIT(client->regs.smmu.bit);
+		smmu_writel(smmu, value, client->regs.smmu.reg);
 	}
 }
 
@@ -798,10 +798,71 @@ static phys_addr_t tegra_smmu_iova_to_phys(struct iommu_domain *domain,
 	return SMMU_PFN_PHYS(pfn) + SMMU_OFFSET_IN_PAGE(iova);
 }
 
+static struct tegra_smmu *tegra_smmu_find(struct device_node *np)
+{
+	struct platform_device *pdev;
+	struct tegra_mc *mc;
+
+	pdev = of_find_device_by_node(np);
+	if (!pdev)
+		return NULL;
+
+	mc = platform_get_drvdata(pdev);
+	if (!mc) {
+		put_device(&pdev->dev);
+		return NULL;
+	}
+
+	return mc->smmu;
+}
+
+static int tegra_smmu_configure(struct tegra_smmu *smmu, struct device *dev,
+				struct of_phandle_args *args)
+{
+	const struct iommu_ops *ops = smmu->iommu.ops;
+	int err;
+
+	err = iommu_fwspec_init(dev, &dev->of_node->fwnode, ops);
+	if (err < 0) {
+		dev_err(dev, "failed to initialize fwspec: %d\n", err);
+		return err;
+	}
+
+	err = ops->of_xlate(dev, args);
+	if (err < 0) {
+		dev_err(dev, "failed to parse SW group ID: %d\n", err);
+		iommu_fwspec_free(dev);
+		return err;
+	}
+
+	return 0;
+}
+
 static struct iommu_device *tegra_smmu_probe_device(struct device *dev)
 {
-	struct tegra_smmu *smmu = dev_iommu_priv_get(dev);
+	struct device_node *np = dev->of_node;
+	struct tegra_smmu *smmu = NULL;
+	struct of_phandle_args args;
+	unsigned int index = 0;
+	int err;
 
+	while (of_parse_phandle_with_args(np, "iommus", "#iommu-cells", index,
+					  &args) == 0) {
+		smmu = tegra_smmu_find(args.np);
+		if (smmu) {
+			err = tegra_smmu_configure(smmu, dev, &args);
+
+			if (err < 0) {
+				of_node_put(args.np);
+				return ERR_PTR(err);
+			}
+		}
+
+		of_node_put(args.np);
+		index++;
+	}
+
+	smmu = dev_iommu_priv_get(dev);
 	if (!smmu)
 		return ERR_PTR(-ENODEV);
 
@@ -983,9 +1044,9 @@ static int tegra_smmu_clients_show(struct seq_file *s, void *data)
 		const struct tegra_mc_client *client = &smmu->soc->clients[i];
 		const char *status;
 
-		value = smmu_readl(smmu, client->smmu.reg);
+		value = smmu_readl(smmu, client->regs.smmu.reg);
 
-		if (value & BIT(client->smmu.bit))
+		if (value & BIT(client->regs.smmu.bit))
 			status = "yes";
 		else
 			status = "no";
@@ -1020,7 +1081,6 @@ struct tegra_smmu *tegra_smmu_probe(struct device *dev,
 				    struct tegra_mc *mc)
 {
 	struct tegra_smmu *smmu;
-	size_t size;
 	u32 value;
 	int err;
 
@@ -1028,9 +1088,17 @@ struct tegra_smmu *tegra_smmu_probe(struct device *dev,
 	if (!smmu)
 		return ERR_PTR(-ENOMEM);
 
-	size = BITS_TO_LONGS(soc->num_asids) * sizeof(long);
+	/*
+	 * This is a bit of a hack. Ideally we'd want to simply return this
+	 * value. However the IOMMU registration process will attempt to add
+	 * all devices to the IOMMU when bus_set_iommu() is called. In order
+	 * not to rely on global variables to track the IOMMU instance, we
+	 * set it here so that it can be looked up from the .probe_device()
+	 * callback via the IOMMU device's .drvdata field.
+	 */
+	mc->smmu = smmu;
 
-	smmu->asids = devm_kzalloc(dev, size, GFP_KERNEL);
+	smmu->asids = devm_bitmap_zalloc(dev, soc->num_asids, GFP_KERNEL);
 	if (!smmu->asids)
 		return ERR_PTR(-ENOMEM);
 
@@ -1076,10 +1144,7 @@ struct tegra_smmu *tegra_smmu_probe(struct device *dev,
 	if (err)
 		return ERR_PTR(err);
 
-	iommu_device_set_ops(&smmu->iommu, &tegra_smmu_ops);
-	iommu_device_set_fwnode(&smmu->iommu, dev->fwnode);
-
-	err = iommu_device_register(&smmu->iommu);
+	err = iommu_device_register(&smmu->iommu, &tegra_smmu_ops, dev);
 	if (err)
 		goto remove_sysfs;
 

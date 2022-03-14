@@ -40,6 +40,24 @@ static u32 tcp_clamp_rto_to_user_timeout(const struct sock *sk)
 	return min_t(u32, icsk->icsk_rto, msecs_to_jiffies(remaining));
 }
 
+u32 tcp_clamp_probe0_to_user_timeout(const struct sock *sk, u32 when)
+{
+	struct inet_connection_sock *icsk = inet_csk(sk);
+	u32 remaining;
+	s32 elapsed;
+
+	if (!icsk->icsk_user_timeout || !icsk->icsk_probes_tstamp)
+		return when;
+
+	elapsed = tcp_jiffies32 - icsk->icsk_probes_tstamp;
+	if (unlikely(elapsed < 0))
+		elapsed = 0;
+	remaining = msecs_to_jiffies(icsk->icsk_user_timeout) - elapsed;
+	remaining = max_t(u32, remaining, TCP_TIMEOUT_MIN);
+
+	return min_t(u32, remaining, when);
+}
+
 /**
  *  tcp_write_err() - close socket and save error info
  *  @sk:  The socket the error has appeared on.
@@ -50,7 +68,7 @@ static u32 tcp_clamp_rto_to_user_timeout(const struct sock *sk)
 static void tcp_write_err(struct sock *sk)
 {
 	sk->sk_err = sk->sk_err_soft ? : ETIMEDOUT;
-	sk->sk_error_report(sk);
+	sk_error_report(sk);
 
 	tcp_write_queue_purge(sk);
 	tcp_done(sk);
@@ -423,7 +441,7 @@ static void tcp_fastopen_synack_timer(struct sock *sk, struct request_sock *req)
  *  This function gets called when the kernel timer for a TCP packet
  *  of this socket expires.
  *
- *  It handles retransmission, timer adjustment and other necesarry measures.
+ *  It handles retransmission, timer adjustment and other necessary measures.
  *
  *  Returns: Nothing (void)
  */
@@ -748,7 +766,7 @@ static enum hrtimer_restart tcp_compressed_ack_kick(struct hrtimer *timer)
 	if (!sock_owned_by_user(sk)) {
 		if (tp->compressed_ack) {
 			/* Since we have to send one ack finally,
-			 * substract one from tp->compressed_ack to keep
+			 * subtract one from tp->compressed_ack to keep
 			 * LINUX_MIB_TCPACKCOMPRESSED accurate.
 			 */
 			tp->compressed_ack--;

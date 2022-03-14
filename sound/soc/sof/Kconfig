@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-config SND_SOC_SOF_TOPLEVEL
+menuconfig SND_SOC_SOF_TOPLEVEL
 	bool "Sound Open Firmware Support"
 	help
 	  This adds support for Sound Open Firmware (SOF). SOF is free and
@@ -9,37 +9,48 @@ config SND_SOC_SOF_TOPLEVEL
 
 if SND_SOC_SOF_TOPLEVEL
 
+config SND_SOC_SOF_PCI_DEV
+	tristate
+
 config SND_SOC_SOF_PCI
 	tristate "SOF PCI enumeration support"
 	depends on PCI
-	select SND_SOC_SOF
-	select SND_SOC_ACPI if ACPI
 	help
 	  This adds support for PCI enumeration. This option is
 	  required to enable Intel Skylake+ devices.
+	  For backwards-compatibility with previous configurations the selection will
+	  be used as default for platform-specific drivers.
 	  Say Y if you need this option.
 	  If unsure select "N".
 
 config SND_SOC_SOF_ACPI
 	tristate "SOF ACPI enumeration support"
 	depends on ACPI || COMPILE_TEST
-	select SND_SOC_SOF
-	select SND_SOC_ACPI if ACPI
-	select IOSF_MBI if X86 && PCI
 	help
 	  This adds support for ACPI enumeration. This option is required
 	  to enable Intel Broadwell/Baytrail/Cherrytrail devices.
+	  For backwards-compatibility with previous configurations the selection will
+	  be used as default for platform-specific drivers.
 	  Say Y if you need this option.
 	  If unsure select "N".
+
+config SND_SOC_SOF_ACPI_DEV
+	tristate
 
 config SND_SOC_SOF_OF
 	tristate "SOF OF enumeration support"
 	depends on OF || COMPILE_TEST
-	select SND_SOC_SOF
 	help
 	  This adds support for Device Tree enumeration. This option is
-	  required to enable i.MX8 devices.
+	  required to enable i.MX8 or Mediatek devices.
 	  Say Y if you need this option. If unsure select "N".
+
+config SND_SOC_SOF_OF_DEV
+	tristate
+
+config SND_SOC_SOF_COMPRESS
+	bool
+	select SND_SOC_COMPRESS
 
 config SND_SOC_SOF_DEBUG_PROBES
 	bool "SOF enable data probing"
@@ -52,7 +63,7 @@ config SND_SOC_SOF_DEBUG_PROBES
 
 config SND_SOC_SOF_DEVELOPER_SUPPORT
 	bool "SOF developer options support"
-	depends on EXPERT
+	depends on EXPERT && SND_SOC_SOF
 	help
 	  This option unlocks SOF developer options for debug/performance/
 	  code hardening.
@@ -62,6 +73,17 @@ config SND_SOC_SOF_DEVELOPER_SUPPORT
 	  If not, select N.
 
 if SND_SOC_SOF_DEVELOPER_SUPPORT
+
+config SND_SOC_SOF_FORCE_PROBE_WORKQUEUE
+	bool "SOF force probe workqueue"
+	select SND_SOC_SOF_PROBE_WORK_QUEUE
+	help
+	  This option forces the use of a probe workqueue, which is only used
+	  when HDaudio is enabled due to module dependencies. Forcing this
+	  option is intended for debug only, but this should not add any
+	  functional issues in nominal cases.
+	  Say Y if you are involved in SOF development and need this option.
+	  If not, select N.
 
 config SND_SOC_SOF_NOCODEC
 	tristate
@@ -172,6 +194,14 @@ config SND_SOC_SOF_DEBUG_IPC_FLOOD_TEST
 	  Say Y if you want to enable IPC flood test.
 	  If unsure, select "N".
 
+config SND_SOC_SOF_DEBUG_IPC_MSG_INJECTOR
+	bool "SOF enable IPC message injector"
+	help
+	  This option enables the IPC message injector which can be used to send
+	  crafted IPC messages to the DSP to test its robustness.
+	  Say Y if you want to enable the IPC message injector.
+	  If unsure, select "N".
+
 config SND_SOC_SOF_DEBUG_RETAIN_DSP_CONTEXT
 	bool "SOF retain DSP context on any FW exceptions"
 	help
@@ -203,8 +233,10 @@ config SND_SOC_SOF_PROBE_WORK_QUEUE
 	  When selected, the probe is handled in two steps, for example to
 	  avoid lockdeps if request_module is used in the probe.
 
+source "sound/soc/sof/amd/Kconfig"
 source "sound/soc/sof/imx/Kconfig"
 source "sound/soc/sof/intel/Kconfig"
+source "sound/soc/sof/mediatek/Kconfig"
 source "sound/soc/sof/xtensa/Kconfig"
 
 endif
